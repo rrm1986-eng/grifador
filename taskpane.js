@@ -1,8 +1,8 @@
-/* Grifador — suplemento de realce para o Word (iPad, web e Windows). Versão 2. */
+/* Grifador — suplemento de realce para o Word (iPad, web e Windows). Versão 4. */
 "use strict";
 
 (function () {
-  var VERSION = "2";
+  var VERSION = "4";
   // Cores padrão do marca-texto do Word (valores exatos da paleta do Word).
   var COLORS = {
     "#FFFF00": "Amarelo",
@@ -14,7 +14,6 @@
   var MAX_CHARS = 20000;          // seleções maiores que isso não são grifadas no automático
   var ADJUST_WINDOW_MS = 6000;    // janela para "corrigir" o grifo quando a seleção é ajustada
   var POLL_MS = 300;              // intervalo da verificação contínua
-  var STATUS_MS = 2500;           // tempo que a mensagem curta fica visível
   var OVERLAP = {
     Contains: 1, ContainsStart: 1, ContainsEnd: 1,
     Inside: 1, InsideStart: 1, InsideEnd: 1,
@@ -37,6 +36,7 @@
     delay: store.get("delay", 600),
     detect: store.get("detect", "auto"),
     adjust: store.get("adjust", true),
+    collapse: store.get("collapse", true),
     api13: false,
     platform: "?",
     eventsRegistered: false,
@@ -56,7 +56,7 @@
   var queue = Promise.resolve();
   var eventTimer = null;
   var pollTimer = null;
-  var statusTimer = null;
+  var flashTimer = null;
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -94,7 +94,7 @@
     state.errors++;
     state.lastError = msg || String(err);
     console.error("[Grifador]", err);
-    setStatus("Erro — toque em ⋯ para ver", true);
+    setStatus("erro (detalhes no quadro abaixo)", true);
     $("moreBtn").classList.add("has-err");
     resetContext();
     renderDiag();
@@ -135,11 +135,15 @@
 
   // ---------- Núcleo: aplicar o grifo ----------
 
-  async function applyColor(c, sel, color, allowAdjust) {
+  // opts.adjust: pode desfazer o grifo anterior se a seleção foi ajustada
+  // opts.collapse: depois de grifar, solta a seleção e põe o cursor no fim do trecho
+  async function applyColor(c, sel, color, opts) {
+    opts = opts || {};
     var value = color === "none" ? null : color;
 
     if (!state.api13) {
       sel.font.highlightColor = value;
+      if (opts.collapse) sel.select("End");
       await c.sync();
       state.applied++;
       afterApply(color);
@@ -151,7 +155,7 @@
       var rel = await relation(c, sel, lastApplied.range);
       if (rel === "Equal") {
         keepOriginal = lastApplied.original;          // só trocou a cor do mesmo trecho
-      } else if (allowAdjust && state.adjust &&
+      } else if (opts.adjust &&
                  Date.now() - lastApplied.time < ADJUST_WINDOW_MS && OVERLAP[rel]) {
         revert(lastApplied);                           // seleção ajustada: desfaz o grifo anterior
       }
@@ -169,6 +173,7 @@
     var handled = track(c, sel.getRange("Whole"));
     if (lastApplied) untrack(c, lastApplied.range);
     if (lastHandled) untrack(c, lastHandled);
+    if (opts.collapse) sel.select("End");   // como no Word para Windows: cursor no fim do grifo
     await c.sync();
 
     lastApplied = { range: anchor, original: original, color: color, time: Date.now() };
@@ -179,6 +184,7 @@
 
   function afterApply(color) {
     clearError();
+    flash(color);
     setStatus(color === "none" ? "Grifo removido" : COLORS[color] + " ✓");
     renderDiag();
   }
@@ -196,7 +202,10 @@
       await c.sync();
       return;
     }
-    await applyColor(c, sel, state.color, true);
+    await applyColor(c, sel, state.color, {
+      collapse: state.collapse,
+      adjust: !state.collapse && state.adjust
+    });
   }
 
   // Quando a seleção some (só o cursor), selecionar o mesmo trecho de novo volta a grifar.
@@ -297,7 +306,7 @@
         setStatus(state.auto ? "Cor ativa: " + COLORS[color] : "Selecione um trecho");
         return;
       }
-      await applyColor(c, r.sel, color, false);
+      await applyColor(c, r.sel, color, {});
       if (candidate) candidate.handled = true;
     });
   }
@@ -316,7 +325,8 @@
 
   function setAuto(on) {
     if (on && !state.api13) {
-      setStatus("Word sem suporte ao automático", true);
+      setStatus("este Word não aceita o modo automático", true);
+      $("moreBtn").classList.add("has-err");
       on = false;
     }
     state.auto = on;
@@ -340,12 +350,24 @@
 
   // ---------- Interface ----------
 
+  // A mensagem fica dentro do ⋮ (a coluna não tem espaço para texto).
   function setStatus(msg, isErr) {
     var el = $("status");
-    clearTimeout(statusTimer);
-    el.textContent = msg;
+    el.textContent = "Última ação: " + msg;
     el.className = "status" + (isErr ? " err" : "");
-    if (!isErr) statusTimer = setTimeout(function () { el.textContent = ""; }, STATUS_MS);
+  }
+
+  // Confirmação visual: a bolinha usada "pulsa" rapidinho.
+  function flash(color) {
+    var el = document.querySelector('.sw[data-color="' + color + '"]');
+    if (!el) return;
+    el.classList.add("flash");
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(function () { el.classList.remove("flash"); }, 220);
+  }
+
+  function renderAdjustRow() {
+    $("adjustRow").hidden = state.collapse;   // com o cursor indo para o fim, não há seleção para ajustar
   }
 
   function clearError() {
@@ -409,6 +431,14 @@
       applyMode();
     });
 
+    $("collapse").checked = state.collapse;
+    renderAdjustRow();
+    $("collapse").addEventListener("change", function (e) {
+      state.collapse = e.target.checked;
+      store.set("collapse", state.collapse);
+      renderAdjustRow();
+    });
+
     $("adjust").checked = state.adjust;
     $("adjust").addEventListener("change", function (e) {
       state.adjust = e.target.checked;
@@ -424,7 +454,8 @@
     renderAuto();
 
     if (info.host !== Office.HostType.Word) {
-      setStatus("Abra dentro do Word", true);
+      setStatus("abra o Grifador dentro do Word", true);
+      $("moreBtn").classList.add("has-err");
       return;
     }
     try { state.platform = String(Office.context.diagnostics.platform); } catch (e) { /* ok */ }

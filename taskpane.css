@@ -25,54 +25,45 @@
 html, body { margin: 0; background: var(--bg); color: var(--text);
   font: 12px/1.35 -apple-system, "Segoe UI", system-ui, sans-serif;
   -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
-main { padding: 6px; }
+main { padding: 4px; }
 button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; padding: 0; }
 
-/* barra única e compacta */
-.bar { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px;
-  border: 1px solid var(--line); border-radius: 18px; background: var(--panel); }
-.dots { display: flex; align-items: center; gap: 2px; }
+/* coluna única e estreita */
+.bar { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 36px;
+  padding: 6px 0; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); }
 
-.switch { width: 30px; height: 18px; border-radius: 9px; background: #b3b3ad;
-  position: relative; flex: none; margin-right: 2px; transition: background .15s; }
-.switch .knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
-  border-radius: 50%; background: #fff; transition: left .15s; }
+/* chave vertical: bolinha embaixo = desligado, em cima = ligado */
+.switch { width: 16px; height: 28px; border-radius: 8px; background: #b3b3ad;
+  position: relative; flex: none; margin-bottom: 4px; transition: background .15s; }
+.switch .knob { position: absolute; left: 2px; top: 14px; width: 12px; height: 12px;
+  border-radius: 50%; background: #fff; transition: top .15s; }
 .switch[aria-checked="true"] { background: var(--on); }
-.switch[aria-checked="true"] .knob { left: 14px; }
+.switch[aria-checked="true"] .knob { top: 2px; }
 
-.sw { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 50%; }
+.sw { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; }
 .dot { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(0,0,0,.28);
-  display: flex; align-items: center; justify-content: center; }
+  display: flex; align-items: center; justify-content: center; transition: transform .12s; }
 .dot.eraser { background: var(--bg); color: var(--muted); }
 .sw.is-active .dot { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sw.flash .dot { transform: scale(1.3); }
 .sw:active .dot, .icon:active { transform: scale(.9); }
 
-.icon { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+.sep { width: 18px; height: 1px; background: var(--line); margin: 3px 0; }
+.icon { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
   border-radius: 50%; color: var(--muted); position: relative; }
-.icon.has-err::after { content: ""; position: absolute; top: 2px; right: 2px; width: 6px; height: 6px;
+.icon.has-err::after { content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px;
   border-radius: 50%; background: var(--err); }
 
-.status { margin: 4px 2px 0; font-size: 11px; color: var(--muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ajustes (escondidos por padrão; abrem pelo ⋮) */
+.more { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; min-width: 200px; }
+.status { margin: 0 0 8px; font-size: 11px; color: var(--muted); word-break: break-word; }
 .status:empty { display: none; }
 .status.err { color: var(--err); }
-
-/* ajustes (escondidos por padrão) */
-.more { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; }
 .field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; }
-.field.check { flex-direction: row; align-items: center; gap: 6px; }
+.field.check { flex-direction: row; align-items: flex-start; gap: 6px; }
 .field input[type=range] { width: 100%; }
 .field select { font: inherit; padding: 4px; border-radius: 6px; border: 1px solid var(--line);
   background: var(--bg); color: var(--text); }
 .diag { font: 11px/1.45 ui-monospace, Menlo, monospace; color: var(--muted); background: var(--panel);
   border-radius: 6px; padding: 6px; white-space: pre-wrap; word-break: break-word;
   -webkit-user-select: text; user-select: text; }
-
-/* se o painel for estreitado (Word no Windows permite arrastar a borda), vira uma coluna fina */
-@media (max-width: 170px) {
-  main { padding: 4px; }
-  .bar, .dots { flex-direction: column; display: flex; }
-  .bar { border-radius: 16px; padding: 6px 3px; width: max-content; }
-  .switch { margin: 0 0 2px; }
-  .status { white-space: normal; }
-}
