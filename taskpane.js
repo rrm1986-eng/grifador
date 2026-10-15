@@ -1,7 +1,8 @@
-/* Grifador — suplemento de realce para o Word (iPad, web e Windows). */
+/* Grifador — suplemento de realce para o Word (iPad, web e Windows). Versão 2. */
 "use strict";
 
 (function () {
+  var VERSION = "2";
   // Cores padrão do marca-texto do Word (valores exatos da paleta do Word).
   var COLORS = {
     "#FFFF00": "Amarelo",
@@ -13,6 +14,7 @@
   var MAX_CHARS = 20000;          // seleções maiores que isso não são grifadas no automático
   var ADJUST_WINDOW_MS = 6000;    // janela para "corrigir" o grifo quando a seleção é ajustada
   var POLL_MS = 300;              // intervalo da verificação contínua
+  var STATUS_MS = 2500;           // tempo que a mensagem curta fica visível
   var OVERLAP = {
     Contains: 1, ContainsStart: 1, ContainsEnd: 1,
     Inside: 1, InsideStart: 1, InsideEnd: 1,
@@ -41,24 +43,27 @@
     eventsSeen: 0,
     polls: 0,
     applied: 0,
+    errors: 0,
     lastError: ""
   };
   if (!COLORS[state.color]) state.color = "#FFFF00";
 
   var ctx = null;          // contexto do Word de longa duração
+  var temps = [];          // objetos rastreados só durante uma operação
   var candidate = null;    // { range, since, handled } — seleção sendo observada
   var lastApplied = null;  // { range, original, color, time } — último grifo feito
   var lastHandled = null;  // seleção que já foi tratada (evita grifar duas vezes)
   var queue = Promise.resolve();
   var eventTimer = null;
   var pollTimer = null;
+  var statusTimer = null;
 
   var $ = function (id) { return document.getElementById(id); };
 
   // ---------- Infraestrutura ----------
 
   function enqueue(fn) {
-    queue = queue.then(fn).catch(handleError);
+    queue = queue.then(fn).then(releaseTemps, function (err) { temps = []; handleError(err); });
     return queue;
   }
 
@@ -74,21 +79,33 @@
     try { c.trackedObjects.remove(obj); } catch (e) { /* já liberado */ }
   }
 
+  function releaseTemps() {
+    if (ctx) for (var i = 0; i < temps.length; i++) untrack(ctx, temps[i]);
+    temps = [];
+  }
+
   function resetContext() {
-    ctx = null; candidate = null; lastApplied = null; lastHandled = null;
+    ctx = null; temps = []; candidate = null; lastApplied = null; lastHandled = null;
   }
 
   function handleError(err) {
-    var msg = (err && (err.message || err.code)) ? (err.code ? err.code + ": " : "") + (err.message || "") : String(err);
-    state.lastError = msg;
+    var msg = err && err.code ? err.code : "";
+    if (err && err.message) msg += (msg ? ": " : "") + err.message;
+    state.errors++;
+    state.lastError = msg || String(err);
     console.error("[Grifador]", err);
-    setStatus("Algo falhou: " + msg, true);
+    setStatus("Erro — toque em ⋯ para ver", true);
+    $("moreBtn").classList.add("has-err");
     resetContext();
     renderDiag();
   }
 
+  // Lê a seleção atual. No Word na web, o objeto da seleção precisa ser rastreado
+  // ANTES do primeiro sync; sem isso ele "morre" e dá InvalidObjectPath.
   async function readSelection(c) {
     var sel = c.document.getSelection();
+    c.trackedObjects.add(sel);
+    temps.push(sel);
     sel.load("text");
     await c.sync();
     var text = sel.text || "";
@@ -161,7 +178,8 @@
   }
 
   function afterApply(color) {
-    setStatus(color === "none" ? "Grifo removido." : "Grifado em " + COLORS[color].toLowerCase() + ".");
+    clearError();
+    setStatus(color === "none" ? "Grifo removido" : COLORS[color] + " ✓");
     renderDiag();
   }
 
@@ -172,7 +190,7 @@
       if (rel === "Equal") return;
     }
     if (text.length > MAX_CHARS) {
-      setStatus("Seleção grande demais para grifar sozinho. Use os botões de cor.");
+      setStatus("Trecho grande demais — use as cores");
       if (lastHandled) untrack(c, lastHandled);
       lastHandled = track(c, sel.getRange("Whole"));
       await c.sync();
@@ -181,13 +199,18 @@
     await applyColor(c, sel, state.color, true);
   }
 
+  // Quando a seleção some (só o cursor), selecionar o mesmo trecho de novo volta a grifar.
+  function forgetHandled(c) {
+    if (lastHandled) untrack(c, lastHandled);
+    lastHandled = null;
+  }
+
   // ---------- Detecção por evento ----------
 
   function onSelectionEvent() {
     state.eventsSeen++;
     if (state.detect === "auto" && pollTimer) stopPolling();   // eventos funcionam: dispensa a verificação
-    renderDiag();
-    if (!state.auto || state.detect === "poll") return;
+    if (!state.auto || state.detect === "poll") { renderDiag(); return; }
     clearTimeout(eventTimer);
     eventTimer = setTimeout(function () { enqueue(eventFire); }, state.delay);
   }
@@ -196,14 +219,8 @@
     if (!state.auto) return;
     var c = getCtx();
     var r = await readSelection(c);
-    if (r.empty) { forgetHandled(c); return; }
+    if (r.empty) { forgetHandled(c); renderDiag(); return; }
     await handleStable(c, r.sel, r.text);
-  }
-
-  // Quando a seleção some (só o cursor), selecionar o mesmo trecho de novo volta a grifar.
-  function forgetHandled(c) {
-    if (lastHandled) untrack(c, lastHandled);
-    lastHandled = null;
   }
 
   // ---------- Detecção por verificação contínua (reserva) ----------
@@ -277,9 +294,7 @@
       var c = getCtx();
       var r = await readSelection(c);
       if (r.empty) {
-        setStatus(state.auto
-          ? "Cor ativa: " + COLORS[color].toLowerCase() + "."
-          : "Selecione um trecho e toque na cor.");
+        setStatus(state.auto ? "Cor ativa: " + COLORS[color] : "Selecione um trecho");
         return;
       }
       await applyColor(c, r.sel, color, false);
@@ -289,20 +304,19 @@
 
   function onUndo() {
     enqueue(async function () {
-      if (!lastApplied) { setStatus("Nada para desfazer."); return; }
+      if (!lastApplied) { setStatus("Nada para desfazer"); return; }
       var c = getCtx();
       var ok = revert(lastApplied);
       untrack(c, lastApplied.range);
       await c.sync();
       lastApplied = null;
-      setStatus(ok ? "Último grifo desfeito."
-                   : "Esse trecho tinha grifos de várias cores; use o Desfazer do próprio Word.");
+      setStatus(ok ? "Desfeito" : "Use o Desfazer do Word");
     });
   }
 
   function setAuto(on) {
     if (on && !state.api13) {
-      setStatus("Este Word não oferece os recursos do modo automático. Use os botões de cor.", true);
+      setStatus("Word sem suporte ao automático", true);
       on = false;
     }
     state.auto = on;
@@ -321,15 +335,21 @@
     }
     renderAuto();
     applyMode();
-    setStatus(on ? "Selecione um trecho e solte: ele será grifado." : "Modo desligado. Selecione e toque na cor.");
+    setStatus(on ? "Ligado: selecione e solte" : "Desligado");
   }
 
   // ---------- Interface ----------
 
   function setStatus(msg, isErr) {
     var el = $("status");
+    clearTimeout(statusTimer);
     el.textContent = msg;
     el.className = "status" + (isErr ? " err" : "");
+    if (!isErr) statusTimer = setTimeout(function () { el.textContent = ""; }, STATUS_MS);
+  }
+
+  function clearError() {
+    $("moreBtn").classList.remove("has-err");
   }
 
   function renderSwatches() {
@@ -342,21 +362,19 @@
   }
 
   function renderAuto() {
-    $("autoSwitch").setAttribute("aria-checked", state.auto ? "true" : "false");
-    $("autoRow").classList.toggle("is-on", state.auto);
-    $("autoSub").textContent = state.auto
-      ? (state.color === "none" ? "Ligado — apagando grifos" : "Ligado — " + COLORS[state.color].toLowerCase())
-      : "Desligado";
+    var sw = $("autoSwitch");
+    sw.setAttribute("aria-checked", state.auto ? "true" : "false");
+    sw.title = "Modo marca-texto: " + (state.auto ? "ligado" : "desligado");
   }
 
   function renderDiag() {
     $("diag").textContent =
-      "Plataforma: " + state.platform + "\n" +
+      "Versão: " + VERSION + " | Plataforma: " + state.platform + "\n" +
       "Word API 1.3: " + (state.api13 ? "sim" : "não") + "\n" +
       "Evento de seleção: " + (state.eventsRegistered ? "registrado" : "não disponível") + "\n" +
       "Eventos recebidos: " + state.eventsSeen + "\n" +
       "Detecção em uso: " + usingNow() + "\n" +
-      "Verificações: " + state.polls + " | Grifos: " + state.applied +
+      "Verificações: " + state.polls + " | Grifos: " + state.applied + " | Erros: " + state.errors +
       (state.lastError ? "\nÚltimo erro: " + state.lastError : "");
   }
 
@@ -369,6 +387,12 @@
     }
     $("autoSwitch").addEventListener("click", function () { setAuto(!state.auto); });
     $("undoBtn").addEventListener("click", onUndo);
+    $("moreBtn").addEventListener("click", function () {
+      var more = $("more");
+      more.hidden = !more.hidden;
+      $("moreBtn").setAttribute("aria-expanded", more.hidden ? "false" : "true");
+      renderDiag();
+    });
 
     $("delay").value = state.delay;
     $("delayOut").textContent = state.delay;
@@ -397,17 +421,15 @@
   Office.onReady(function (info) {
     bindUi();
     renderSwatches();
+    renderAuto();
 
     if (info.host !== Office.HostType.Word) {
-      setStatus("Abra este suplemento dentro do Word.", true);
+      setStatus("Abra dentro do Word", true);
       return;
     }
     try { state.platform = String(Office.context.diagnostics.platform); } catch (e) { /* ok */ }
     state.api13 = Office.context.requirements.isSetSupported("WordApi", "1.3");
-    if (!state.api13) state.auto = false;
-
-    renderAuto();
-    setStatus(state.auto ? "Modo ligado. Selecione um trecho e solte." : "Selecione um trecho e toque na cor.");
+    if (!state.api13) { state.auto = false; renderAuto(); }
 
     var doc = Office.context.document;
     if (doc && doc.addHandlerAsync) {
