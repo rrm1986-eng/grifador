@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Grifador</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <link rel="stylesheet" href="taskpane.css">
+</head>
+<body>
+  <main>
+    <section class="auto" id="autoRow">
+      <div>
+        <div class="auto-title">Modo marca-texto</div>
+        <div class="auto-sub" id="autoSub">Desligado</div>
+      </div>
+      <button class="switch" id="autoSwitch" role="switch" aria-checked="false" aria-label="Ligar modo marca-texto">
+        <span class="knob"></span>
+      </button>
+    </section>
+
+    <section class="swatches" aria-label="Cores">
+      <button class="sw" data-color="#FFFF00" data-name="Amarelo" aria-label="Amarelo"><span class="dot" style="background:#FFFF00"></span><span class="lbl">Amarelo</span></button>
+      <button class="sw" data-color="#00FFFF" data-name="Azul claro" aria-label="Azul claro"><span class="dot" style="background:#00FFFF"></span><span class="lbl">Azul</span></button>
+      <button class="sw" data-color="#00FF00" data-name="Verde claro" aria-label="Verde claro"><span class="dot" style="background:#00FF00"></span><span class="lbl">Verde</span></button>
+      <button class="sw" data-color="#FF0000" data-name="Vermelho" aria-label="Vermelho"><span class="dot" style="background:#FF0000"></span><span class="lbl">Vermelho</span></button>
+      <button class="sw" data-color="none" data-name="Borracha" aria-label="Borracha (remover grifo)"><span class="dot eraser">&#x2715;</span><span class="lbl">Apagar</span></button>
+    </section>
+
+    <section class="actions">
+      <button id="undoBtn" class="btn">Desfazer último grifo</button>
+    </section>
+
+    <p class="status" id="status" aria-live="polite">Carregando…</p>
+
+    <details class="settings">
+      <summary>Ajustes e diagnóstico</summary>
+      <label class="field">
+        <span>Espera antes de grifar: <b id="delayOut">600</b> ms</span>
+        <input type="range" id="delay" min="250" max="1500" step="50" value="600">
+      </label>
+      <label class="field">
+        <span>Como detectar a seleção</span>
+        <select id="detect">
+          <option value="auto">Automático (recomendado)</option>
+          <option value="event">Só eventos do Word</option>
+          <option value="poll">Só verificação contínua</option>
+        </select>
+      </label>
+      <label class="field check">
+        <input type="checkbox" id="adjust" checked>
+        <span>Corrigir grifo ao ajustar a seleção logo em seguida</span>
+      </label>
+      <div class="diag" id="diag"></div>
+    </details>
+  </main>
+  <script src="taskpane.js"></script>
+</body>
+</html>
