@@ -5,54 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Grifador</title>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
-  <link rel="stylesheet" href="taskpane.css?v=4">
+  <link rel="stylesheet" href="taskpane.css?v=5">
 </head>
 <body>
-  <main>
-    <div class="bar">
-      <button class="switch" id="autoSwitch" role="switch" aria-checked="false"
-              aria-label="Modo marca-texto" title="Modo marca-texto"><span class="knob"></span></button>
-      <button class="sw" data-color="#FFFF00" aria-label="Amarelo" title="Amarelo"><span class="dot" style="background:#FFFF00"></span></button>
-      <button class="sw" data-color="#00FFFF" aria-label="Azul claro" title="Azul claro"><span class="dot" style="background:#00FFFF"></span></button>
-      <button class="sw" data-color="#00FF00" aria-label="Verde claro" title="Verde claro"><span class="dot" style="background:#00FF00"></span></button>
-      <button class="sw" data-color="#FF0000" aria-label="Vermelho" title="Vermelho"><span class="dot" style="background:#FF0000"></span></button>
-      <button class="sw" data-color="none" aria-label="Borracha" title="Borracha (apagar grifo)"><span class="dot eraser">
-        <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-      </span></button>
-      <span class="sep" aria-hidden="true"></span>
-      <button class="icon" id="undoBtn" aria-label="Desfazer último grifo" title="Desfazer último grifo">
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5 3L2 6l3 3M2 6h7a4 4 0 010 8H6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <button class="icon" id="moreBtn" aria-label="Ajustes" aria-expanded="false" title="Ajustes e diagnóstico">
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="3" r="1.4" fill="currentColor"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/><circle cx="8" cy="13" r="1.4" fill="currentColor"/></svg>
-      </button>
-    </div>
-
-    <section class="more" id="more" hidden>
-      <p class="status" id="status" aria-live="polite"></p>
-      <label class="field">
-        <span>Espera antes de grifar: <b id="delayOut">600</b> ms</span>
-        <input type="range" id="delay" min="250" max="1500" step="50" value="600">
-      </label>
-      <label class="field">
-        <span>Detectar a seleção por</span>
-        <select id="detect">
-          <option value="auto">Automático</option>
-          <option value="event">Só eventos do Word</option>
-          <option value="poll">Só verificação contínua</option>
-        </select>
-      </label>
-      <label class="field check">
-        <input type="checkbox" id="collapse" checked>
-        <span>No automático, soltar a seleção e pôr o cursor no fim do grifo</span>
-      </label>
-      <label class="field check" id="adjustRow">
-        <input type="checkbox" id="adjust" checked>
-        <span>Corrigir o grifo ao ajustar a seleção</span>
-      </label>
-      <div class="diag" id="diag"></div>
-    </section>
-  </main>
-  <script src="taskpane.js?v=4"></script>
+  <div class="bar" id="bar">
+    <button class="switch" id="autoSwitch" role="switch" aria-checked="true"
+            aria-label="Modo marca-texto" title="Modo marca-texto"><span class="knob"></span></button>
+    <button class="sw" data-color="#FFFF00" aria-label="Amarelo" title="Amarelo"><span class="dot" style="background:#FFFF00"></span></button>
+    <button class="sw" data-color="#00FFFF" aria-label="Azul claro" title="Azul claro"><span class="dot" style="background:#00FFFF"></span></button>
+    <button class="sw" data-color="#00FF00" aria-label="Verde claro" title="Verde claro"><span class="dot" style="background:#00FF00"></span></button>
+    <button class="sw" data-color="#FF0000" aria-label="Vermelho" title="Vermelho"><span class="dot" style="background:#FF0000"></span></button>
+    <button class="sw" data-color="none" aria-label="Borracha" title="Borracha"><span class="dot eraser">
+      <svg viewBox="0 0 16 16" width="8" height="8" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+    </span></button>
+    <button class="icon" id="undoBtn" aria-label="Desfazer último grifo" title="Desfazer último grifo">
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M5 3L2 6l3 3M2 6h7a4 4 0 010 8H6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+  <script src="taskpane.js?v=5"></script>
 </body>
 </html>

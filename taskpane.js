@@ -1,24 +1,15 @@
-/* Grifador — suplemento de realce para o Word (iPad, web e Windows). Versão 4. */
+/* Grifador — marca-texto fixo para o Word (web, iPad e Windows). Versão 5. */
 "use strict";
 
 (function () {
-  var VERSION = "4";
-  // Cores padrão do marca-texto do Word (valores exatos da paleta do Word).
-  var COLORS = {
-    "#FFFF00": "Amarelo",
-    "#00FFFF": "Azul claro",
-    "#00FF00": "Verde claro",
-    "#FF0000": "Vermelho",
-    "none": "Borracha"
-  };
-  var MAX_CHARS = 20000;          // seleções maiores que isso não são grifadas no automático
-  var ADJUST_WINDOW_MS = 6000;    // janela para "corrigir" o grifo quando a seleção é ajustada
-  var POLL_MS = 300;              // intervalo da verificação contínua
-  var OVERLAP = {
-    Contains: 1, ContainsStart: 1, ContainsEnd: 1,
-    Inside: 1, InsideStart: 1, InsideEnd: 1,
-    OverlapsBefore: 1, OverlapsAfter: 1
-  };
+  var VERSION = "5";
+  // Cores padrão do marca-texto do Word.
+  var COLORS = { "#FFFF00": 1, "#00FFFF": 1, "#00FF00": 1, "#FF0000": 1, "none": 1 };
+  // Quando o Word avisa que a seleção mudou, espera só este tanto para ter certeza
+  // de que você terminou de arrastar (os avisos chegam em rajada durante o arraste).
+  var EVENT_SETTLE_MS = 90;
+  // Plano B, só se o Word não avisar a seleção: confere a seleção neste intervalo.
+  var POLL_MS = 150;
 
   var store = {
     get: function (k, d) {
@@ -30,240 +21,130 @@
     }
   };
 
-  var state = {
-    auto: store.get("auto", false),
-    color: store.get("color", "#FFFF00"),
-    delay: store.get("delay", 600),
-    detect: store.get("detect", "auto"),
-    adjust: store.get("adjust", true),
-    collapse: store.get("collapse", true),
-    api13: false,
-    platform: "?",
-    eventsRegistered: false,
-    eventsSeen: 0,
-    polls: 0,
-    applied: 0,
-    errors: 0,
-    lastError: ""
-  };
-  if (!COLORS[state.color]) state.color = "#FFFF00";
+  var auto = store.get("auto", true);
+  var color = store.get("color", "#FFFF00");
+  if (!COLORS[color]) color = "#FFFF00";
 
+  var api13 = false;
   var ctx = null;          // contexto do Word de longa duração
   var temps = [];          // objetos rastreados só durante uma operação
-  var candidate = null;    // { range, since, handled } — seleção sendo observada
-  var lastApplied = null;  // { range, original, color, time } — último grifo feito
-  var lastHandled = null;  // seleção que já foi tratada (evita grifar duas vezes)
+  var lastApplied = null;  // { range, original } — para o botão desfazer
+  var candidate = null;    // plano B: seleção observada { range, handled }
+  var eventsSeen = 0;
   var queue = Promise.resolve();
-  var eventTimer = null;
-  var pollTimer = null;
-  var flashTimer = null;
+  var eventTimer = null, pollTimer = null, flashTimer = null;
 
   var $ = function (id) { return document.getElementById(id); };
 
   // ---------- Infraestrutura ----------
 
   function enqueue(fn) {
-    queue = queue.then(fn).then(releaseTemps, function (err) { temps = []; handleError(err); });
+    queue = queue.then(fn).then(releaseTemps, onError);
     return queue;
   }
-
-  function getCtx() {
-    if (!ctx) ctx = new Word.RequestContext();
-    return ctx;
-  }
-
-  function track(c, obj) { c.trackedObjects.add(obj); return obj; }
-
-  function untrack(c, obj) {
-    if (!obj) return;
-    try { c.trackedObjects.remove(obj); } catch (e) { /* já liberado */ }
-  }
-
+  function getCtx() { if (!ctx) ctx = new Word.RequestContext(); return ctx; }
+  function track(c, o) { c.trackedObjects.add(o); return o; }
+  function untrack(c, o) { if (o) { try { c.trackedObjects.remove(o); } catch (e) { /* ok */ } } }
   function releaseTemps() {
     if (ctx) for (var i = 0; i < temps.length; i++) untrack(ctx, temps[i]);
     temps = [];
   }
 
-  function resetContext() {
-    ctx = null; temps = []; candidate = null; lastApplied = null; lastHandled = null;
+  function onError(err) {
+    temps = []; ctx = null; lastApplied = null; candidate = null;
+    var msg = (err && (err.code || err.message)) || String(err);
+    console.error("[Grifador " + VERSION + "]", err);
+    $("bar").classList.add("err");
+    $("bar").title = "Erro: " + msg;
+  }
+  function clearErr() { $("bar").classList.remove("err"); $("bar").title = ""; }
+
+  function snapshot(v) {
+    return (v === "" || v === undefined) ? { uniform: false, value: null } : { uniform: true, value: v || null };
   }
 
-  function handleError(err) {
-    var msg = err && err.code ? err.code : "";
-    if (err && err.message) msg += (msg ? ": " : "") + err.message;
-    state.errors++;
-    state.lastError = msg || String(err);
-    console.error("[Grifador]", err);
-    setStatus("erro (detalhes no quadro abaixo)", true);
-    $("moreBtn").classList.add("has-err");
-    resetContext();
-    renderDiag();
-  }
-
-  // Lê a seleção atual. No Word na web, o objeto da seleção precisa ser rastreado
-  // ANTES do primeiro sync; sem isso ele "morre" e dá InvalidObjectPath.
-  async function readSelection(c) {
+  // Prepara a leitura da seleção (sem ir ao Word ainda). No Word na web o objeto
+  // precisa ser rastreado antes do primeiro sync, senão "morre" (InvalidObjectPath).
+  function querySel(c) {
     var sel = c.document.getSelection();
     c.trackedObjects.add(sel);
     temps.push(sel);
-    sel.load("text");
-    await c.sync();
-    var text = sel.text || "";
-    var empty = text.replace(/[\s​ ]/g, "").length === 0;
-    return { sel: sel, text: text, empty: empty };
+    sel.load(api13 ? "isEmpty" : "text");
+    sel.font.load("highlightColor");
+    return sel;
+  }
+  function isEmpty(sel) {
+    return api13 ? sel.isEmpty : (sel.text || "").replace(/[\s​ ]/g, "").length === 0;
   }
 
-  async function relation(c, a, b) {
-    var r = a.compareLocationWith(b);
-    await c.sync();
-    return r.value;
-  }
-
-  function snapshot(v) {
-    // null = sem grifo; "" ou undefined = grifo misto (não dá para restaurar exatamente)
-    if (v === "" || v === undefined) return { uniform: false, value: null };
-    return { uniform: true, value: v || null };
-  }
-
-  // Devolve o trecho ao estado anterior. Se antes havia grifos de cores misturadas,
-  // não mexe (para não apagar grifos antigos) e devolve false.
-  function revert(L) {
-    if (!L.original.uniform) return false;
-    L.range.font.highlightColor = L.original.value;
-    return true;
-  }
-
-  // ---------- Núcleo: aplicar o grifo ----------
-
-  // opts.adjust: pode desfazer o grifo anterior se a seleção foi ajustada
-  // opts.collapse: depois de grifar, solta a seleção e põe o cursor no fim do trecho
-  async function applyColor(c, sel, color, opts) {
-    opts = opts || {};
-    var value = color === "none" ? null : color;
-
-    if (!state.api13) {
-      sel.font.highlightColor = value;
-      if (opts.collapse) sel.select("End");
-      await c.sync();
-      state.applied++;
-      afterApply(color);
-      return;
-    }
-
-    var keepOriginal = null;
-    if (lastApplied) {
-      var rel = await relation(c, sel, lastApplied.range);
-      if (rel === "Equal") {
-        keepOriginal = lastApplied.original;          // só trocou a cor do mesmo trecho
-      } else if (opts.adjust &&
-                 Date.now() - lastApplied.time < ADJUST_WINDOW_MS && OVERLAP[rel]) {
-        revert(lastApplied);                           // seleção ajustada: desfaz o grifo anterior
-      }
-    }
-
-    var original = keepOriginal;
-    if (!original) {
-      sel.font.load("highlightColor");
-      await c.sync();
-      original = snapshot(sel.font.highlightColor);
-    }
-
-    sel.font.highlightColor = value;
+  // Aplica a cor numa única ida ao Word. collapse = soltar a seleção e pôr o cursor no fim.
+  async function apply(c, sel, value, collapse) {
+    var original = snapshot(sel.font.highlightColor);
+    sel.font.highlightColor = value === "none" ? null : value;
     var anchor = track(c, sel.getRange("Whole"));
-    var handled = track(c, sel.getRange("Whole"));
     if (lastApplied) untrack(c, lastApplied.range);
-    if (lastHandled) untrack(c, lastHandled);
-    if (opts.collapse) sel.select("End");   // como no Word para Windows: cursor no fim do grifo
+    if (collapse) sel.select("End");
     await c.sync();
-
-    lastApplied = { range: anchor, original: original, color: color, time: Date.now() };
-    lastHandled = handled;
-    state.applied++;
-    afterApply(color);
+    lastApplied = { range: anchor, original: original };
+    clearErr();
+    flash(value);
   }
 
-  function afterApply(color) {
-    clearError();
-    flash(color);
-    setStatus(color === "none" ? "Grifo removido" : COLORS[color] + " ✓");
-    renderDiag();
-  }
-
-  async function handleStable(c, sel, text) {
-    if (!state.auto) return;
-    if (lastHandled) {
-      var rel = await relation(c, sel, lastHandled);
-      if (rel === "Equal") return;
-    }
-    if (text.length > MAX_CHARS) {
-      setStatus("Trecho grande demais — use as cores");
-      if (lastHandled) untrack(c, lastHandled);
-      lastHandled = track(c, sel.getRange("Whole"));
-      await c.sync();
-      return;
-    }
-    await applyColor(c, sel, state.color, {
-      collapse: state.collapse,
-      adjust: !state.collapse && state.adjust
-    });
-  }
-
-  // Quando a seleção some (só o cursor), selecionar o mesmo trecho de novo volta a grifar.
-  function forgetHandled(c) {
-    if (lastHandled) untrack(c, lastHandled);
-    lastHandled = null;
-  }
-
-  // ---------- Detecção por evento ----------
+  // ---------- Automático: pelo aviso do Word (caminho rápido) ----------
 
   function onSelectionEvent() {
-    state.eventsSeen++;
-    if (state.detect === "auto" && pollTimer) stopPolling();   // eventos funcionam: dispensa a verificação
-    if (!state.auto || state.detect === "poll") { renderDiag(); return; }
+    eventsSeen++;
+    stopPolling();                       // o Word avisa: o plano B não é mais necessário
+    if (!auto) return;
     clearTimeout(eventTimer);
-    eventTimer = setTimeout(function () { enqueue(eventFire); }, state.delay);
+    eventTimer = setTimeout(function () { enqueue(autoFire); }, EVENT_SETTLE_MS);
   }
 
-  async function eventFire() {
-    if (!state.auto) return;
+  async function autoFire() {
+    if (!auto) return;
     var c = getCtx();
-    var r = await readSelection(c);
-    if (r.empty) { forgetHandled(c); renderDiag(); return; }
-    await handleStable(c, r.sel, r.text);
+    var sel = querySel(c);
+    await c.sync();                      // 1ª ida: a seleção está vazia? qual o grifo atual?
+    if (isEmpty(sel)) return;            // inclui o aviso causado pelo próprio "cursor no fim"
+    await apply(c, sel, color, true);    // 2ª ida: grifa e põe o cursor no fim
   }
 
-  // ---------- Detecção por verificação contínua (reserva) ----------
+  // ---------- Automático: plano B (se o Word não avisar a seleção) ----------
 
-  function dropCandidate(c) {
-    if (candidate) untrack(c, candidate.range);
-    candidate = null;
-  }
+  function dropCandidate(c) { if (candidate) untrack(c, candidate.range); candidate = null; }
 
   async function pollTick() {
-    if (!state.auto) return;
-    state.polls++;
+    if (!auto) return;
     var c = getCtx();
-    var r = await readSelection(c);
-    if (r.empty) { dropCandidate(c); forgetHandled(c); return; }
-
-    if (candidate) {
-      var rel = await relation(c, r.sel, candidate.range);
-      if (rel === "Equal") {
-        if (!candidate.handled && Date.now() - candidate.since >= state.delay) {
-          candidate.handled = true;
-          await handleStable(c, r.sel, r.text);
-        }
-        return;
-      }
-      dropCandidate(c);
-    }
-    candidate = { range: track(c, r.sel.getRange("Whole")), since: Date.now(), handled: false };
+    var sel = querySel(c);
+    var cmp = candidate ? sel.compareLocationWith(candidate.range) : null;
     await c.sync();
-    if (state.polls % 10 === 0) renderDiag();
+    if (isEmpty(sel)) { dropCandidate(c); return; }
+    if (cmp && cmp.value === "Equal") {  // ficou parada desde a última conferida: você soltou
+      if (!candidate.handled) {
+        candidate.handled = true;
+        await apply(c, sel, color, true);
+      }
+      return;
+    }
+    dropCandidate(c);
+    candidate = { range: track(c, sel.getRange("Whole")), handled: false };
+    await c.sync();
+  }
+
+  // Ao ligar: a seleção que já está na tela não deve ser grifada sozinha.
+  async function primeCurrent() {
+    var c = getCtx();
+    var sel = querySel(c);
+    await c.sync();
+    dropCandidate(c);
+    if (isEmpty(sel)) return;
+    candidate = { range: track(c, sel.getRange("Whole")), handled: true };
+    await c.sync();
   }
 
   function startPolling() {
-    if (pollTimer) return;
+    if (pollTimer || eventsSeen > 0 || !auto || !api13) return;
     var loop = function () {
       pollTimer = setTimeout(function () {
         enqueue(pollTick).then(function () { if (pollTimer) loop(); });
@@ -271,206 +152,88 @@
     };
     loop();
   }
+  function stopPolling() { clearTimeout(pollTimer); pollTimer = null; }
 
-  function stopPolling() {
-    clearTimeout(pollTimer);
-    pollTimer = null;
-  }
+  // ---------- Botões ----------
 
-  function applyMode() {
-    if (!state.auto || !state.api13) { stopPolling(); renderDiag(); return; }
-    if (state.detect === "poll") startPolling();
-    else if (state.detect === "event") stopPolling();
-    else if (state.eventsRegistered && state.eventsSeen > 0) stopPolling();
-    else startPolling();
-    renderDiag();
-  }
-
-  function usingNow() {
-    if (!state.auto) return "nenhuma (modo desligado)";
-    if (pollTimer) return "verificação contínua";
-    return state.eventsRegistered ? "eventos do Word" : "nenhuma";
-  }
-
-  // ---------- Ações do painel ----------
-
-  function onSwatch(color) {
-    state.color = color;
+  function onSwatch(c0) {
+    color = c0;
     store.set("color", color);
     renderSwatches();
-    renderAuto();
     enqueue(async function () {
       var c = getCtx();
-      var r = await readSelection(c);
-      if (r.empty) {
-        setStatus(state.auto ? "Cor ativa: " + COLORS[color] : "Selecione um trecho");
-        return;
-      }
-      await applyColor(c, r.sel, color, {});
+      var sel = querySel(c);
+      await c.sync();
+      if (isEmpty(sel)) return;
+      await apply(c, sel, color, auto);
       if (candidate) candidate.handled = true;
     });
   }
 
   function onUndo() {
     enqueue(async function () {
-      if (!lastApplied) { setStatus("Nada para desfazer"); return; }
+      if (!lastApplied) return;
       var c = getCtx();
-      var ok = revert(lastApplied);
+      if (lastApplied.original.uniform) lastApplied.range.font.highlightColor = lastApplied.original.value;
       untrack(c, lastApplied.range);
       await c.sync();
       lastApplied = null;
-      setStatus(ok ? "Desfeito" : "Use o Desfazer do Word");
     });
   }
 
   function setAuto(on) {
-    if (on && !state.api13) {
-      setStatus("este Word não aceita o modo automático", true);
-      $("moreBtn").classList.add("has-err");
-      on = false;
-    }
-    state.auto = on;
+    if (on && !api13) on = false;
+    auto = on;
     store.set("auto", on);
-    if (on) {
-      // ao ligar, a seleção que já estava na tela não deve ser grifada sozinha
-      enqueue(async function () {
-        var c = getCtx();
-        var r = await readSelection(c);
-        if (!r.empty) {
-          if (lastHandled) untrack(c, lastHandled);
-          lastHandled = track(c, r.sel.getRange("Whole"));
-          await c.sync();
-        }
-      });
-    }
     renderAuto();
-    applyMode();
-    setStatus(on ? "Ligado: selecione e solte" : "Desligado");
+    clearTimeout(eventTimer);
+    if (on) { enqueue(primeCurrent); startPolling(); } else { stopPolling(); }
   }
 
   // ---------- Interface ----------
 
-  // A mensagem fica dentro do ⋮ (a coluna não tem espaço para texto).
-  function setStatus(msg, isErr) {
-    var el = $("status");
-    el.textContent = "Última ação: " + msg;
-    el.className = "status" + (isErr ? " err" : "");
-  }
-
-  // Confirmação visual: a bolinha usada "pulsa" rapidinho.
-  function flash(color) {
-    var el = document.querySelector('.sw[data-color="' + color + '"]');
+  function flash(value) {
+    var el = document.querySelector('.sw[data-color="' + value + '"]');
     if (!el) return;
     el.classList.add("flash");
     clearTimeout(flashTimer);
-    flashTimer = setTimeout(function () { el.classList.remove("flash"); }, 220);
+    flashTimer = setTimeout(function () { el.classList.remove("flash"); }, 180);
   }
-
-  function renderAdjustRow() {
-    $("adjustRow").hidden = state.collapse;   // com o cursor indo para o fim, não há seleção para ajustar
-  }
-
-  function clearError() {
-    $("moreBtn").classList.remove("has-err");
-  }
-
   function renderSwatches() {
     var btns = document.querySelectorAll(".sw");
     for (var i = 0; i < btns.length; i++) {
-      var on = btns[i].getAttribute("data-color") === state.color;
+      var on = btns[i].getAttribute("data-color") === color;
       btns[i].classList.toggle("is-active", on);
       btns[i].setAttribute("aria-pressed", on ? "true" : "false");
     }
   }
-
   function renderAuto() {
-    var sw = $("autoSwitch");
-    sw.setAttribute("aria-checked", state.auto ? "true" : "false");
-    sw.title = "Modo marca-texto: " + (state.auto ? "ligado" : "desligado");
+    $("autoSwitch").setAttribute("aria-checked", auto ? "true" : "false");
+    $("autoSwitch").title = "Modo marca-texto: " + (auto ? "ligado" : "desligado");
   }
 
-  function renderDiag() {
-    $("diag").textContent =
-      "Versão: " + VERSION + " | Plataforma: " + state.platform + "\n" +
-      "Word API 1.3: " + (state.api13 ? "sim" : "não") + "\n" +
-      "Evento de seleção: " + (state.eventsRegistered ? "registrado" : "não disponível") + "\n" +
-      "Eventos recebidos: " + state.eventsSeen + "\n" +
-      "Detecção em uso: " + usingNow() + "\n" +
-      "Verificações: " + state.polls + " | Grifos: " + state.applied + " | Erros: " + state.errors +
-      (state.lastError ? "\nÚltimo erro: " + state.lastError : "");
-  }
-
-  function bindUi() {
-    var btns = document.querySelectorAll(".sw");
-    for (var i = 0; i < btns.length; i++) {
-      btns[i].addEventListener("click", function (ev) {
-        onSwatch(ev.currentTarget.getAttribute("data-color"));
-      });
-    }
-    $("autoSwitch").addEventListener("click", function () { setAuto(!state.auto); });
-    $("undoBtn").addEventListener("click", onUndo);
-    $("moreBtn").addEventListener("click", function () {
-      var more = $("more");
-      more.hidden = !more.hidden;
-      $("moreBtn").setAttribute("aria-expanded", more.hidden ? "false" : "true");
-      renderDiag();
-    });
-
-    $("delay").value = state.delay;
-    $("delayOut").textContent = state.delay;
-    $("delay").addEventListener("input", function (e) {
-      state.delay = Math.round(Number(e.target.value));
-      $("delayOut").textContent = state.delay;
-      store.set("delay", state.delay);
-    });
-
-    $("detect").value = state.detect;
-    $("detect").addEventListener("change", function (e) {
-      state.detect = e.target.value;
-      store.set("detect", state.detect);
-      applyMode();
-    });
-
-    $("collapse").checked = state.collapse;
-    renderAdjustRow();
-    $("collapse").addEventListener("change", function (e) {
-      state.collapse = e.target.checked;
-      store.set("collapse", state.collapse);
-      renderAdjustRow();
-    });
-
-    $("adjust").checked = state.adjust;
-    $("adjust").addEventListener("change", function (e) {
-      state.adjust = e.target.checked;
-      store.set("adjust", state.adjust);
-    });
-  }
-
-  // ---------- Inicialização ----------
+  // ---------- Início ----------
 
   Office.onReady(function (info) {
-    bindUi();
-    renderSwatches();
-    renderAuto();
-
-    if (info.host !== Office.HostType.Word) {
-      setStatus("abra o Grifador dentro do Word", true);
-      $("moreBtn").classList.add("has-err");
-      return;
+    var btns = document.querySelectorAll(".sw");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].addEventListener("click", function (ev) { onSwatch(ev.currentTarget.getAttribute("data-color")); });
     }
-    try { state.platform = String(Office.context.diagnostics.platform); } catch (e) { /* ok */ }
-    state.api13 = Office.context.requirements.isSetSupported("WordApi", "1.3");
-    if (!state.api13) { state.auto = false; renderAuto(); }
+    $("autoSwitch").addEventListener("click", function () { setAuto(!auto); });
+    $("undoBtn").addEventListener("click", onUndo);
+    renderSwatches();
+
+    if (info.host !== Office.HostType.Word) { onError(new Error("abra o Grifador dentro do Word")); return; }
+    api13 = Office.context.requirements.isSetSupported("WordApi", "1.3");
+    if (!api13) auto = false;
+    renderAuto();
+    if (auto) enqueue(primeCurrent);
 
     var doc = Office.context.document;
     if (doc && doc.addHandlerAsync) {
-      doc.addHandlerAsync(Office.EventType.DocumentSelectionChanged, onSelectionEvent, function (res) {
-        state.eventsRegistered = res.status === Office.AsyncResultStatus.Succeeded;
-        if (!state.eventsRegistered && res.error) state.lastError = "evento: " + res.error.message;
-        applyMode();
-      });
+      doc.addHandlerAsync(Office.EventType.DocumentSelectionChanged, onSelectionEvent, function () { startPolling(); });
     } else {
-      applyMode();
+      startPolling();
     }
   });
 })();
